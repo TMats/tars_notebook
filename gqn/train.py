@@ -2,7 +2,6 @@ import argparse
 import datetime
 import math
 import os
-import random
 from tensorboardX import SummaryWriter
 import torch
 from torch.utils.data import DataLoader
@@ -19,7 +18,7 @@ torch.manual_seed(seed)
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Generative Query Network on Shepard Metzler Example')
     parser.add_argument('--gradient_steps', type=int, default=2*(10**6), help='number of gradient steps to run (default: 2 million)')
-    parser.add_argument('--batch_size', type=int, default=36, help='size of batch (default: 36)'
+    parser.add_argument('--batch_size', type=int, default=36, help='size of batch (default: 36)')
     parser.add_argument('--data_dir', type=str, help='location of training data', default="train")
     parser.add_argument('--root_log_dir', type=str, help='root location of log', default='log')
     parser.add_argument('--log_interval', type=int, help='interval number of steps for logging', default=1000)
@@ -32,7 +31,7 @@ if __name__ == '__main__':
         device = "cpu"
 
     # for logging
-    log_dir = root_log_dir +'/'+str(datetime.datetime.now())
+    log_dir = args.root_log_dir +'/'+str(datetime.datetime.now())
     os.mkdir(log_dir)
     os.mkdir(log_dir+'/models')
     os.mkdir(log_dir+'/runs')
