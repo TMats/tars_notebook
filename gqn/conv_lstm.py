@@ -48,3 +48,4 @@ class Conv2dLSTMCell(nn.Module):
         hidden = output_gate * torch.tanh(cell)
 
         return hidden, cell
+
