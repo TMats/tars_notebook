@@ -40,7 +40,7 @@ class Generator(Normal):
         self.eta_g = nn.Conv2d(h_dim, x_dim, kernel_size=1, stride=1, padding=0)
 
     def forward(self, u, sigma):
-        mu = torch.sigmoid(self.eta_g(u))
+        mu = self.eta_g(u)
         return {"loc":mu, "scale":sigma}
 
 
@@ -48,22 +48,26 @@ class Prior(Normal):
     def __init__(self, z_dim, h_dim):
         super(Prior, self).__init__(cond_var=["h_g"],var=["z"])
         self.z_dim = z_dim
-        self.eta_pi = nn.Conv2d(h_dim, 2*z_dim, kernel_size=5, stride=1, padding=2)
+        self.eta_pi_mu = nn.Conv2d(h_dim, 2*z_dim, kernel_size=5, stride=1, padding=2)
+        self.eta_pi_std = nn.Conv2d(h_dim, 2*z_dim, kernel_size=5, stride=1, padding=2)
 
     def forward(self, h_g):
-        mu, std = torch.split(self.eta_pi(h_g), self.z_dim, dim=1)
-        return {"loc":mu ,"scale":F.softplus(std)}
+        mu = self.eta_pi_mu(h_g)
+        std = torch.exp(0.5*self.eta_pi_std(h_g))
+        return {"loc":mu ,"scale":std}
 
 
 class Inference(Normal):
     def __init__(self, z_dim, h_dim):
         super(Inference, self).__init__(cond_var=["h_i"],var=["z"])
         self.z_dim = z_dim
-        self.eta_e = nn.Conv2d(h_dim, 2*z_dim, kernel_size=5, stride=1, padding=2)
-
+        self.eta_e_mu = nn.Conv2d(h_dim, 2*z_dim, kernel_size=5, stride=1, padding=2)
+        self.eta_e_std = nn.Conv2d(h_dim, 2*z_dim, kernel_size=5, stride=1, padding=2)
+        
     def forward(self, h_i):
-        mu, std = torch.split(self.eta_e(h_i), self.z_dim, dim=1)
-        return {"loc":mu, "scale":F.softplus(std)}
+        mu = self.eta_e_mu(h_i)
+        std = torch.exp(0.5*self.eta_e_std(h_i))
+        return {"loc":mu, "scale":std}
 
 
 class GQN(nn.Module):

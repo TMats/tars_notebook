@@ -58,9 +58,9 @@ if __name__ == '__main__':
 
     # Learning rate
     mu_f, mu_i = 5*10**(-5), 5*10**(-4)
-    mu, sigma = mu_f, sigma_f
+    mu, sigma = mu_i, sigma_i
 
-    optimizer = torch.optim.Adam(gqn.parameters(), lr=mu)
+    optimizer = torch.optim.Adam(gqn.parameters(), lr=mu, betas=(0.9, 0.999))
     kwargs = {'num_workers':args.workers, 'pin_memory': True} if torch.cuda.is_available() else {}
     loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, **kwargs)
 
@@ -93,7 +93,8 @@ if __name__ == '__main__':
 
             # Anneal learning rate
             mu = max(mu_f + (mu_i - mu_f)*(1 - s/(1.6 * 10**6)), mu_f)
-            optimizer.lr = mu * math.sqrt(1 - 0.999**s)/(1 - 0.9**s)
+#             optimizer.lr = mu * math.sqrt(1 - 0.999**s)/(1 - 0.9**s)
+            optimizer.lr = mu
             # Anneal pixel variance
             sigma = max(sigma_f + (sigma_i - sigma_f)*(1 - s/(2 * 10**5)), sigma_f)
 
