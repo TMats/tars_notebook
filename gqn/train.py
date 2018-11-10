@@ -25,13 +25,18 @@ if __name__ == '__main__':
     parser.add_argument('--workers', type=int, help='number of data loading workers', default=2)
     args = parser.parse_args()
 
-    if torch.cuda.is_available():
-        device = "cuda"
-    else:
-        device = "cpu"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # args
+    train_data_dir = '/workspace/dataset/shepard_metzler_7_parts-torch/train'
+
+    # number of workers to load data
+    num_workers = 0
 
     # for logging
-    log_dir = args.root_log_dir +'/'+str(datetime.datetime.now())
+    log_interval_num = 500
+    dir_name = str(datetime.datetime.now())
+    log_dir = '/workspace/logs/'+ dir_name
     os.mkdir(log_dir)
     os.mkdir(log_dir+'/models')
     os.mkdir(log_dir+'/runs')
@@ -39,7 +44,10 @@ if __name__ == '__main__':
     # tensorboardX
     writer = SummaryWriter(log_dir=log_dir+'/runs')
 
-    train_dataset = ShepardMetzler(root_dir=args.data_dir, target_transform=transform_viewpoint)
+    batch_size = 36
+    gradient_steps = 2*(10**6)
+
+    train_dataset = ShepardMetzler(root_dir=train_data_dir, target_transform=transform_viewpoint)
 
     # model settings
     xDim=3
@@ -52,6 +60,7 @@ if __name__ == '__main__':
 
     # model
     gqn=GQN(xDim,vDim,rDim,hDim,zDim, L, SCALE).to(device)
+    gqn = nn.DataParallel(gqn, device_ids=[0, 1, 2])
 
     # Pixel variance
     sigma_f, sigma_i = 0.7, 2.0
@@ -61,8 +70,8 @@ if __name__ == '__main__':
     mu, sigma = mu_i, sigma_i
 
     optimizer = torch.optim.Adam(gqn.parameters(), lr=mu, betas=(0.9, 0.999))
-    kwargs = {'num_workers':args.workers, 'pin_memory': True} if torch.cuda.is_available() else {}
-    loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, **kwargs)
+    kwargs = {'num_workers':num_workers, 'pin_memory': True} if torch.cuda.is_available() else {}
+    loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, **kwargs)
 
     # Number of gradient steps
     s = 0
@@ -70,35 +79,37 @@ if __name__ == '__main__':
         for x, v in tqdm(loader):
             x = x.to(device)
             v = v.to(device)
-            x_nll, kls, x_target, x_reconst = gqn(x, v, sigma)
-            loss = x_nll + kls
+            nll, kl, x_q, x_rec, x_gen = gqn(x, v, sigma)
+            nll = nll.mean()
+            kl = kl.mean()
+            loss = nll + kl
             loss.backward()
 
             optimizer.step()
             optimizer.zero_grad()
 
+            writer.add_scalar('train_nll', nll, s)
+            writer.add_scalar('train_kl', kl, s)
+            writer.add_scalar('train_loss', loss, s)
             # Keep a checkpoint every n steps
-            if s % args.log_interval == 0:
+            if s % log_interval_num == 0:
                 torch.save(gqn, log_dir + "/models/model-{}.pt".format(s))
-                writer.add_scalar('train_nll', x_nll, s)
-                writer.add_scalar('train_kl', kls, s)
-                writer.add_scalar('train_loss', loss, s)
-                writer.add_image('target_image', x_target[0], s)
-                writer.add_image('target_reconst', x_reconst[0], s)
+                writer.add_image('ground_truth', x_q[0], s)
+                writer.add_image('reconstruction', x_rec[0], s)
+                writer.add_image('generation', x_gen[0], s)
 
-            if s >= args.gradient_steps:
+            if s >= gradient_steps:
                 break
 
             s += 1
 
             # Anneal learning rate
             mu = max(mu_f + (mu_i - mu_f)*(1 - s/(1.6 * 10**6)), mu_f)
-#             optimizer.lr = mu * math.sqrt(1 - 0.999**s)/(1 - 0.9**s)
             optimizer.lr = mu
             # Anneal pixel variance
             sigma = max(sigma_f + (sigma_i - sigma_f)*(1 - s/(2 * 10**5)), sigma_f)
 
-        if s >= args.gradient_steps:
+        if s >= gradient_steps:
             torch.save(gqn, log_dir + "/models/model-final.pt")
             break
     writer.close()

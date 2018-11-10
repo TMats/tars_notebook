@@ -16,7 +16,7 @@ class GeneratorCore(nn.Module):
         super(GeneratorCore, self).__init__()
         self.core = Conv2dLSTMCell(v_dim + r_dim + z_dim, h_dim, kernel_size=5, stride=1, padding=2)
         self.upsample = nn.ConvTranspose2d(h_dim, h_dim, kernel_size=SCALE, stride=SCALE, padding=0)
-
+        
     def forward(self, z, v, r, h_g, c_g, u):
         h_g, c_g =  self.core(torch.cat([z, v, r], dim=1), [h_g, c_g])
         u = self.upsample(h_g) + u
@@ -26,49 +26,43 @@ class GeneratorCore(nn.Module):
 class InferenceCore(nn.Module):
     def __init__(self, x_dim, v_dim, r_dim, h_dim):
         super(InferenceCore, self).__init__()
-        self.core = Conv2dLSTMCell(h_dim + x_dim + v_dim + r_dim, h_dim, kernel_size=5, stride=1, padding=2)
-
-    def forward(self, x, v, r, h_g, h_e, c_e):
-        h_e, c_e = self.core(torch.cat([h_g, x, v, r], dim=1), [h_e, c_e])
+        self.core = Conv2dLSTMCell(2*h_dim + x_dim + v_dim + r_dim, h_dim, kernel_size=5, stride=1, padding=2)
+        
+    def forward(self, x, v, r, h_g, h_e, c_e, u):
+        h_e, c_e = self.core(torch.cat([h_g, u, x, v, r], dim=1), [h_e, c_e])
         return h_e, c_e
-
 
 # distributions
 class Generator(Normal):
     def __init__(self, x_dim, h_dim):
         super(Generator, self).__init__(cond_var=["u", "sigma"],var=["x_q"])
         self.eta_g = nn.Conv2d(h_dim, x_dim, kernel_size=1, stride=1, padding=0)
-
+        
     def forward(self, u, sigma):
         mu = self.eta_g(u)
         return {"loc":mu, "scale":sigma}
-
 
 class Prior(Normal):
     def __init__(self, z_dim, h_dim):
         super(Prior, self).__init__(cond_var=["h_g"],var=["z"])
         self.z_dim = z_dim
-        self.eta_pi_mu = nn.Conv2d(h_dim, 2*z_dim, kernel_size=5, stride=1, padding=2)
-        self.eta_pi_std = nn.Conv2d(h_dim, 2*z_dim, kernel_size=5, stride=1, padding=2)
+        self.eta_pi = nn.Conv2d(h_dim, 2*z_dim, kernel_size=5, stride=1, padding=2)
 
     def forward(self, h_g):
-        mu = self.eta_pi_mu(h_g)
-        std = torch.exp(0.5*self.eta_pi_std(h_g))
+        mu, logvar = torch.split(self.eta_pi(h_g), self.z_dim, dim=1)
+        std = torch.exp(0.5*logvar)
         return {"loc":mu ,"scale":std}
-
-
+    
 class Inference(Normal):
     def __init__(self, z_dim, h_dim):
         super(Inference, self).__init__(cond_var=["h_i"],var=["z"])
         self.z_dim = z_dim
-        self.eta_e_mu = nn.Conv2d(h_dim, 2*z_dim, kernel_size=5, stride=1, padding=2)
-        self.eta_e_std = nn.Conv2d(h_dim, 2*z_dim, kernel_size=5, stride=1, padding=2)
+        self.eta_e = nn.Conv2d(h_dim, 2*z_dim, kernel_size=5, stride=1, padding=2)
         
     def forward(self, h_i):
-        mu = self.eta_e_mu(h_i)
-        std = torch.exp(0.5*self.eta_e_std(h_i))
+        mu, logvar = torch.split(self.eta_e(h_i), self.z_dim, dim=1)
+        std = torch.exp(0.5*logvar)
         return {"loc":mu, "scale":std}
-
 
 class GQN(nn.Module):
     def __init__(self, x_dim, v_dim, r_dim, h_dim, z_dim, L, SCALE):
@@ -83,6 +77,7 @@ class GQN(nn.Module):
 
         self.upsample   = nn.ConvTranspose2d(h_dim, h_dim, kernel_size=SCALE, stride=SCALE, padding=0)
         self.downsample = nn.Conv2d(x_dim, x_dim, kernel_size=SCALE, stride=SCALE, padding=0)
+        self.downsample_u = nn.Conv2d(h_dim, h_dim, kernel_size=SCALE, stride=SCALE, padding=0)
 
         # distribution
         self.pi = Prior(z_dim, h_dim)
@@ -137,23 +132,33 @@ class GQN(nn.Module):
         # Reset cell state
         cell_g = x_q.new_zeros((batch_size, self.h_dim, h//self.SCALE, w//self.SCALE))
         cell_i = x_q.new_zeros((batch_size, self.h_dim, h//self.SCALE, w//self.SCALE))
-
+        
+        # Reset hidden state and cell state for prior
+        hidden_g_pi = x_q.new_zeros((batch_size, self.h_dim, h//self.SCALE, w//self.SCALE))
+        cell_g_pi = x_q.new_zeros((batch_size, self.h_dim, h//self.SCALE, w//self.SCALE))
+        
         u = x_q.new_zeros((batch_size, self.h_dim, h, w))
+        u_pi = x_q.new_zeros((batch_size, self.h_dim, h, w))
+        
         x_q_downsampled = self.downsample(x_q)
 
         kls = 0
         for _ in range(self.L):
             # kl
             z = self.q.sample({"h_i": hidden_i})["z"]
-            kl = KullbackLeibler(self.q, self.pi)
-            kl_estimated = kl.estimate({"h_i":hidden_i, "h_g":hidden_g})
-            kls += kl_estimated
+            z_pi = self.pi.sample({"h_g": hidden_g_pi})["z"]
+            kl = KullbackLeibler(self.q, self.pi).mean()
+            kl_tensor = kl.estimate({"h_i":hidden_i, "h_g":hidden_g})
+            kls += kl_tensor
             # update state
-            hidden_i, cell_i = self.inference_core(x_q_downsampled, v_q, r, hidden_g, hidden_i, cell_i)
+            _u = self.downsample_u(u)
+            hidden_i, cell_i = self.inference_core(x_q_downsampled, v_q, r, hidden_g, hidden_i, cell_i, _u)
             hidden_g, cell_g, u = self.generator_core(z, v_q, r, hidden_g, cell_g, u)
+            hidden_g_pi, cell_g_pi, u_pi = self.generator_core(z_pi, v_q, r, hidden_g_pi, cell_g_pi, u_pi)
 
-        x_sample = self.g.sample({"u": u, "sigma":sigma})
-        x_reconst = x_sample["x_q"]
-        x_nll = -torch.mean(self.g.log_likelihood({"u":x_sample["u"], "sigma":x_sample["sigma"], "x_q": x_q}), dim=0)
-        kls = torch.mean(torch.sum(kls.view(batch_size, -1),dim=1), dim=0)
-        return x_nll, kls, x_q, x_reconst
+        x_rec = self.g.sample_mean({"u": u, "sigma":sigma})
+        x_gen = self.g.sample_mean({"u": u_pi, "sigma":sigma})
+        nll = NLL(self.g).mean()
+        nll_tensor = nll.estimate({"u":u, "sigma":sigma, "x_q": x_q})
+
+        return nll_tensor, kls, x_q, x_rec, x_gen
